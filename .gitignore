@@ -1,0 +1,30 @@
+# Byte-compiled / cache
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# Logs / datasets / models
+*.log
+*.pth
+*.ckpt
+*.h5
+*.csv
+*.tsv
+*.zip
+*.tar
+*.gz
+
+# Jupyter Notebook checkpoints
+.ipynb_checkpoints/
+
+# OS / editor files
+.DS_Store
+.idea/
+.vscode/
+
+*.pth
