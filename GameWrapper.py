@@ -70,7 +70,7 @@ class GameWrapper:
         card_tensor = np.zeros((6,4,13), dtype=np.int8)
 
         # do hole cards
-        priv_seq_str = self.state.information_state_string(3).split("[Private: ")[1].split("]")[0]
+        priv_seq_str = self.state.information_state_string(player_id).split("[Private: ")[1].split("]")[0]
         for c in range(0,len(priv_seq_str),2):
             two_card_chars = priv_seq_str[c:c+2]
             col_idx = GameWrapper.rank_dict[two_card_chars[0]]
@@ -79,7 +79,7 @@ class GameWrapper:
 
 
         # do public cards
-        action_seq_str = self.state.information_state_string(3).split("[Public: ")[1].split("]")[0]
+        action_seq_str = self.state.information_state_string(player_id).split("[Public: ")[1].split("]")[0]
         count = 1
         for c in range(0,len(action_seq_str),2):
             two_card_chars = action_seq_str[c:c+2]
@@ -126,18 +126,18 @@ class GameWrapper:
 
     
     def reset_alpha_holdem_action_tensor(self):
-        self.action_tensor = np.zeros((self.max_channels, 8, 5), dtype = np.int8)
+        self.action_tensor = np.zeros((self.max_channels, self.num_players + 2 , 5), dtype = np.int8)
 
 
     def update_alpha_holdem_action_tensor(self, action_int: int, player_id: int, round_number: int, legal_actions : np.array):  
         # TODO IS PLAYER ID GONNA START AT 0 OR 1
-        sum_row_idx = 6
-        legal_row_idx = 7
+        sum_row_idx = self.num_players
+        legal_row_idx = self.num_players + 1
  
         self.action_tensor[round_number * self.max_action_per_round + self.actions_per_round_ct, player_id, action_int] = 1
 
         self.action_tensor[round_number * self.max_action_per_round + self.actions_per_round_ct, sum_row_idx, :] = \
-            np.logical_or.reduce(self.action_tensor[round_number * self.max_action_per_round + self.actions_per_round_ct, 0:6, :]).astype(np.int8)
+            np.logical_or.reduce(self.action_tensor[round_number * self.max_action_per_round + self.actions_per_round_ct, 0: sum_row_idx, :]).astype(np.int8)
 
         self.action_tensor[round_number * self.max_action_per_round + self.actions_per_round_ct, legal_row_idx, :][legal_actions] = 1
 

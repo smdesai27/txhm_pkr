@@ -7,16 +7,18 @@ import torch.optim as optim # type:ignore
 import torch.nn.functional as F # type:ignore
 from torch.distributions import Categorical # type:ignore
 
-class PokerDQN(nn.Module):
+class PokerPolicyNet(nn.Module):
     """
     A deep q-network for playing poker
     process two seperate inputs: a card tensor and an action history tensor
     """
     action_space_size = 5
 
-    def __init__(self):
-        super(PokerDQN, self).__init__()
+    def __init__(self, num_players:int=6):
+        super(PokerPolicyNet, self).__init__()
         self.dropout = nn.Dropout(p=0.3)
+        self.num_players = num_players
+        self.actions_per_player = self.num_players * 2
 
         # Create tower 1 : Card feature extraction
         # This tower processes the (6, 4, 13) card tensor.
@@ -33,13 +35,15 @@ class PokerDQN(nn.Module):
         # Create tower 2 : Action feature extraction
         # 72, 8, 5
         # This tower processes the action tensor.
+        flattened_size = 32 * (self.num_players + 2) * self.action_space_size
+        actions_in_channels = self.num_players * self.actions_per_player
         self.action_tower = nn.Sequential(
-            nn.Conv2d(in_channels=72, out_channels=16, kernel_size=(3,3), padding=1),
+            nn.Conv2d(in_channels=actions_in_channels, out_channels=16, kernel_size=(3,3), padding=1),
             nn.ReLU(),
             nn.Conv2d(in_channels=16, out_channels=32, kernel_size=(3,3), padding=1),
             nn.ReLU(),
             nn.Flatten(),
-            nn.Linear(32 * 8 * 5, 256),
+            nn.Linear(flattened_size, 256),
             nn.ReLU()
         )
 
@@ -53,7 +57,7 @@ class PokerDQN(nn.Module):
 
         # Output head
         # Actor Head : outputs action prob. --> policy
-        self.actor_head = nn.Linear(512, PokerDQN.action_space_size)
+        self.actor_head = nn.Linear(512, PokerPolicyNet.action_space_size)
 
         # Critic head: outputs single state value
         self.critic_head = nn.Linear(512, 1)
@@ -82,7 +86,8 @@ class Agent:
     def __init__(self, player_id: int, learning_rate: float = 0.001, 
                  discount_factor: float = 0.99, ppo_clip: float = 0.2, 
                  delta1: float = 2.2, delta2: float = 1.8, delta3: float = 1.0, 
-                 gae_lambda: float = 0.95, ppo_epochs: int = 5, game = None):
+                 gae_lambda: float = 0.95, ppo_epochs: int = 5, game = None, 
+                 num_players:int=6):
         
         self.game = game
         
@@ -99,11 +104,13 @@ class Agent:
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         
         # Initialize the Deep Q-Network and move it to the selected device
-        self.policy_net = PokerDQN().to(self.device)
+        self.policy_net = PokerPolicyNet(num_players=num_players).to(self.device)
         self.optimizer = optim.Adam(self.policy_net.parameters(), lr=learning_rate)
         
         # Memory to store trajectories for PPO updates
         self.memory = []
+        self.reward_free_memory = []
+        self.rewards_per_episode = []
 
     def select_action(self, action_tensor: np.array, card_tensor: np.array, legal_actions: list) -> tuple[int, torch.Tensor, torch.Tensor]:
         """
@@ -128,15 +135,26 @@ class Agent:
             log_prob = distribution.log_prob(action)
 
             return action.item(), log_prob, state_value.squeeze(0)
-
-    def store_transition(self, obs, action, log_prob, reward, value):
-        self.memory.append({
+    
+    def reward_free_store_transition(self, obs, action, log_prob, value):
+        self.reward_free_memory.append({
             "obs": obs,
             "action": action,
             "log_prob": log_prob.detach(),
-            "reward": reward,
             "value": value.detach()
         })
+    
+    def store_transition_with_reward(self, reward, episode_len: int):
+        for x in self.reward_free_memory:
+            self.memory.append({
+                "obs": x["obs"],
+                "action": x["action"],
+                "log_prob": x["log_prob"].detach(),
+                "reward": reward,
+                "value": x["value"].detach()
+            })
+        self.rewards_per_episode.append(len(self.reward_free_memory))
+        self.reward_free_memory.clear()
 
     def learn(self):
         """
@@ -156,22 +174,30 @@ class Agent:
 
         # --- GAE Calculation ---
         advantages = np.zeros_like(rewards, dtype=np.float32)
-        last_advantage = 0
-        for t in reversed(range(len(rewards))):
-            # If not the last step, we use the next value from the critic.
-            # Otherwise, the final reward is the return and there is no next state value
-            next_value = values[t+1] if t + 1 < len(rewards) else 0.0
-            
-            # This is the TD error: TD(0) target - current value
-            td_error = rewards[t] + self.gamma * next_value - values[t]
-            
-            # GAE formula: advantage_t = td_error + gamma * lambda * advantage_{t+1}
-            advantages[t] = td_error + self.gamma * self.gae_lambda * last_advantage
-            last_advantage = advantages[t]
+        start_index = 0
 
-        # Convert advantages to a tensor and normalize it
+        for episode_len in self.rewards_per_episode:
+            last_advantage = 0.0 # Reset for each new episode
+            end_index = start_index + episode_len
+            
+            # Slice the rewards and values for just this episode
+            episode_rewards = rewards[start_index:end_index]
+            episode_values = values[start_index:end_index]
+            
+            for t in reversed(range(episode_len)):
+                next_value = episode_values[t+1] if t + 1 < episode_len else 0.0
+                td_error = episode_rewards[t] + self.gamma * next_value - episode_values[t]
+                
+                # The index into the main 'advantages' array needs to be offset
+                advantages[start_index + t] = td_error + self.gamma * self.gae_lambda * last_advantage
+                last_advantage = advantages[start_index + t]
+            
+            start_index = end_index
+
+        # Convert to tensor and normalize AFTER all episodes are processed
         advantages = torch.tensor(advantages, dtype=torch.float32, device=self.device)
         advantages = (advantages - advantages.mean()) / (advantages.std() + 1e-10)
+
 
         # --- PPO Epochs and Loss Calculation ---
         # Convert obs to tensors once to avoid repetition inside the loop
@@ -203,7 +229,8 @@ class Agent:
 
             # Critic Loss (target is discounted returns)
             # The .squeeze() and .detach() are to make sure tensor shapes align correctly
-            critic_loss = F.mse_loss(state_values.squeeze(1), advantages.detach())
+            returns = advantages + values.detach()
+            critic_loss = F.mse_loss(state_values.squeeze(1), returns)
 
             # Total loss
             loss = actor_loss + critic_loss
@@ -219,6 +246,7 @@ class Agent:
         # Clear memory after all epochs
         self.prev_mem_len = len(self.memory)
         self.memory.clear()
+        self.rewards_per_episode.clear()
 
         return np.mean(actor_losses), np.mean(critic_losses)
 

@@ -4,18 +4,30 @@ import random
 import torch # type: ignore
 
 class GameHandler:
+
+    num_players = 2
+
+    if num_players == 2:
+        blind_config = "100 50"
+        stack_config = "20000 20000"
+    elif num_players == 6:
+        blind_config = "100 50 0 0 0 0"
+        stack_config = "20000 20000 20000 20000 20000 20000"
+    
+
+
     # 6 player no limit hold em standard config 
     config = {
         "betting": "nolimit",
-        "numPlayers": 6,
+        "numPlayers": num_players,
         "numRounds": 4,
-        "blind": "100 50 0 0 0 0",
+        "blind": blind_config,
         "firstPlayer": "2 1 1 1",
         "numSuits": 4,
         "numRanks": 13,
         "numBoardCards": "0 3 1 1",
         'numHoleCards' : 2,
-        "stack": "20000 20000 20000 20000 20000 20000",
+        "stack": stack_config,
         "bettingAbstraction": "fchpa",
         "potSize": 0,
         "boardCards": "",
@@ -26,7 +38,7 @@ class GameHandler:
         self.agent_list = []
         self.game = GameWrapper(GameHandler.config)
         # Initialize a single agent that will play against itself
-        self.poker_agent = Agent(player_id=0, game = self.game)
+        self.poker_agent = Agent(player_id=0, game = self.game, num_players=GameHandler.config["numPlayers"])
 
     def init_agents(self):
         for x in range(6):
@@ -52,6 +64,7 @@ class GameHandler:
             for _ in range(num_episodes_per_iteration):
                 # Reset the game for a new episode
                 self.game.reset_hand()
+                episode_transitions = [] ## TODO IMPLEMENT FIX FOR OPPOSING PLAYER GETTING REWARDS FOR ONE 
                 
                 while not self.game.check_terminal():
                     # Handle chance nodes (card deals) before a player's turn
@@ -69,26 +82,26 @@ class GameHandler:
 
                     # Select an action
                     action, log_prob, value = self.poker_agent.select_action(action_tensor, card_tensor, legal_actions)
-                    
                     # Store the transition
-                    reward = self.game.get_rewards()[current_player]
-                    self.poker_agent.store_transition((card_tensor, action_tensor), action, log_prob, reward, value)
-                    
+                    self.poker_agent.reward_free_store_transition((card_tensor, action_tensor), action, log_prob, value)
                     # Apply the action
                     self.game.apply_action(action)
                     
-            # 2. Learn from the collected data
+                # 2. Learn from the collected data
+                reward = self.game.get_rewards()[current_player]
+                self.poker_agent.store_transition_with_reward(reward)
+            
             actor_loss, critic_loss = self.poker_agent.learn()
             
             print(f"Agent trained on {self.poker_agent.prev_mem_len} transitions.")
             print(f"Average Actor Loss: {actor_loss:.4f}, Average Critic Loss: {critic_loss:.4f}")
 
 
-    def save_policy(self):
-        self.poker_agent.save_policy("poker_policy.pth")
+    def save_policy(self, path:str="poker_policy.pth"):
+        self.poker_agent.save_policy(path)
 
-    def load_policy(self):
-        self.poker_agent.load_policy("poker_policy.pth")
+    def load_policy(self, path:str="poker_policy.pth"):
+        self.poker_agent.load_policy(path)
 
     def watch_playthrough(self, num_episodes=1):
         """
@@ -130,19 +143,5 @@ class GameHandler:
             rewards = self.game.get_rewards()
             print(f"\n--- Episode {episode + 1} Concluded ---")
             print(self.game.to_string())
-
-
-        
-
-if __name__ == "__main__":
-    # Ensure torch tensors are on CPU if not using a GPU
-    # This part can be adjusted based on your system setup
-    handler = GameHandler()
-    if not torch.cuda.is_available():
-        print("CUDA not available, running on CPU.")
-
-    handler.run_self_play_loop()
-
-    handler.save_policy()
     
     
