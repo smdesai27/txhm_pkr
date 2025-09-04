@@ -3,6 +3,7 @@ import numpy as np
 
 class GameWrapper:
 
+    round_len_heuristic = 10
     suit_dict = {'c': 0, 'd': 1, 'h': 2, 's': 3}
     rank_dict = {'2': 0, '3': 1, '4': 2, '5': 3, '6': 4, '7': 5, '8': 6, '9': 7, 'T': 8, 'J': 9, 'Q': 10, 'K': 11, 'A': 12}
 
@@ -11,7 +12,7 @@ class GameWrapper:
         self.state = self.game.new_initial_state()
 
         self.num_players = self.game.num_players()
-        self.max_action_per_round = self.num_players * 3
+        self.max_action_per_round = self.num_players * GameWrapper.round_len_heuristic
         self.max_channels = 4 * self.max_action_per_round
         
         self.reset_alpha_holdem_action_tensor()
@@ -130,6 +131,15 @@ class GameWrapper:
 
 
     def update_alpha_holdem_action_tensor(self, action_int: int, player_id: int, round_number: int, legal_actions : np.array):  
+
+        if self.actions_per_round_ct >= self.max_action_per_round:
+            print(f"--- TENSOR OVERFLOW WARNING ---")
+            print(f"Exceeded max_action_per_round limit of {self.max_action_per_round} with heuristic {GameWrapper.round_len_heuristic}.")
+            print(f"Action {action_int} by player {player_id} in round {round_number} was not recorded in the action tensor.")
+            print(f"----------------------")
+            return # Exit the function to prevent the crash
+        # --- END OF SAFETY CHECK ---
+
         # TODO IS PLAYER ID GONNA START AT 0 OR 1
         sum_row_idx = self.num_players
         legal_row_idx = self.num_players + 1
@@ -150,3 +160,4 @@ class GameWrapper:
     def reset_hand(self):
         self.state = self.game.new_initial_state()
         self.reset_alpha_holdem_action_tensor()
+        self.actions_per_round_ct = 0

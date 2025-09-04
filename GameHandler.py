@@ -38,7 +38,9 @@ class GameHandler:
         self.agent_list = []
         self.game = GameWrapper(GameHandler.config)
         # Initialize a single agent that will play against itself
-        self.poker_agent = Agent(player_id=0, game = self.game, num_players=GameHandler.config["numPlayers"])
+        max_action_channels = self.game.max_channels
+        self.poker_agent = Agent(player_id=0, game = self.game, num_players=GameHandler.config["numPlayers"], 
+                                 max_action_channels = max_action_channels)
 
     def init_agents(self):
         for x in range(6):
@@ -52,11 +54,10 @@ class GameHandler:
     def to_string(self):
         return self.game.to_string()    
     
-    def run_self_play_loop(self,num_iterations=5000, num_episodes_per_iteration=100):
+    def run_self_play_loop(self,num_iterations=5000, num_episodes_per_iteration=300):
         """
         Main training loop for self-play with PPO.
         """
-
         for i in range(num_iterations):
             print(f"--- Iteration {i+1}/{num_iterations} ---")
             
@@ -64,7 +65,7 @@ class GameHandler:
             for _ in range(num_episodes_per_iteration):
                 # Reset the game for a new episode
                 self.game.reset_hand()
-                episode_transitions = [] ## TODO IMPLEMENT FIX FOR OPPOSING PLAYER GETTING REWARDS FOR ONE 
+                episode_transitions = [] 
                 
                 while not self.game.check_terminal():
                     # Handle chance nodes (card deals) before a player's turn
@@ -82,14 +83,30 @@ class GameHandler:
 
                     # Select an action
                     action, log_prob, value = self.poker_agent.select_action(action_tensor, card_tensor, legal_actions)
-                    # Store the transition
-                    self.poker_agent.reward_free_store_transition((card_tensor, action_tensor), action, log_prob, value)
+                    
+                    #store transition to assign reward to coorect player
+                    episode_transitions.append({
+                    "obs": (card_tensor, action_tensor),
+                    "action": action,
+                    "log_prob": log_prob,
+                    "value": value,
+                    "player": current_player
+                    })
+
                     # Apply the action
                     self.game.apply_action(action)
+
                     
                 # 2. Learn from the collected data
-                reward = self.game.get_rewards()[current_player]
-                self.poker_agent.store_transition_with_reward(reward)
+                final_rewards = self.game.get_rewards()
+                for transition in episode_transitions:
+                    player_id = transition["player"]
+                    reward = final_rewards[player_id]
+                    # Pass the full transition and its correct reward to the agent
+                    self.poker_agent.store_final_transition(transition, reward)
+
+                if episode_transitions: # Avoid adding zero if an episode had no transitions
+                    self.poker_agent.add_episode_len(len(episode_transitions))
             
             actor_loss, critic_loss = self.poker_agent.learn()
             

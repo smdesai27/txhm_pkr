@@ -8,10 +8,5 @@ if __name__ == "__main__":
     if not torch.cuda.is_available():
         print("CUDA not available, running on CPU.")
 
-    # Uncomment this line to train the agent
-    # handler.run_self_play_loop()
-    
-    # Load the trained policy from the filed
-    handler.load_policy()
-    # Call the new watch_playthrough method to see the agent in action
-    handler.watch_playthrough(num_episodes=5)
+    handler.run_self_play_loop(num_iterations = 15000, num_episodes_per_iteration=300)
+    handler.save_policy()

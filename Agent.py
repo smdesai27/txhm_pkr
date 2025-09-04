@@ -14,7 +14,7 @@ class PokerPolicyNet(nn.Module):
     """
     action_space_size = 5
 
-    def __init__(self, num_players:int=6):
+    def __init__(self, num_players:int=6, max_action_channels: int = None):
         super(PokerPolicyNet, self).__init__()
         self.dropout = nn.Dropout(p=0.3)
         self.num_players = num_players
@@ -36,9 +36,8 @@ class PokerPolicyNet(nn.Module):
         # 72, 8, 5
         # This tower processes the action tensor.
         flattened_size = 32 * (self.num_players + 2) * self.action_space_size
-        actions_in_channels = self.num_players * self.actions_per_player
         self.action_tower = nn.Sequential(
-            nn.Conv2d(in_channels=actions_in_channels, out_channels=16, kernel_size=(3,3), padding=1),
+            nn.Conv2d(in_channels=max_action_channels, out_channels=16, kernel_size=(3,3), padding=1),
             nn.ReLU(),
             nn.Conv2d(in_channels=16, out_channels=32, kernel_size=(3,3), padding=1),
             nn.ReLU(),
@@ -87,7 +86,7 @@ class Agent:
                  discount_factor: float = 0.99, ppo_clip: float = 0.2, 
                  delta1: float = 2.2, delta2: float = 1.8, delta3: float = 1.0, 
                  gae_lambda: float = 0.95, ppo_epochs: int = 5, game = None, 
-                 num_players:int=6):
+                 num_players:int=6, max_action_channels: int = None):
         
         self.game = game
         
@@ -104,12 +103,11 @@ class Agent:
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         
         # Initialize the Deep Q-Network and move it to the selected device
-        self.policy_net = PokerPolicyNet(num_players=num_players).to(self.device)
+        self.policy_net = PokerPolicyNet(num_players=num_players, max_action_channels=max_action_channels).to(self.device)
         self.optimizer = optim.Adam(self.policy_net.parameters(), lr=learning_rate)
         
         # Memory to store trajectories for PPO updates
         self.memory = []
-        self.reward_free_memory = []
         self.rewards_per_episode = []
 
     def select_action(self, action_tensor: np.array, card_tensor: np.array, legal_actions: list) -> tuple[int, torch.Tensor, torch.Tensor]:
@@ -135,26 +133,20 @@ class Agent:
             log_prob = distribution.log_prob(action)
 
             return action.item(), log_prob, state_value.squeeze(0)
+
     
-    def reward_free_store_transition(self, obs, action, log_prob, value):
-        self.reward_free_memory.append({
-            "obs": obs,
-            "action": action,
-            "log_prob": log_prob.detach(),
-            "value": value.detach()
-        })
-    
-    def store_transition_with_reward(self, reward, episode_len: int):
-        for x in self.reward_free_memory:
-            self.memory.append({
-                "obs": x["obs"],
-                "action": x["action"],
-                "log_prob": x["log_prob"].detach(),
+    def store_final_transition(self, transition, reward):
+        self.memory.append({
+                "obs": transition["obs"],
+                "action": transition["action"],
+                "log_prob": transition["log_prob"].detach(),
                 "reward": reward,
-                "value": x["value"].detach()
+                "value": transition["value"].detach()
             })
-        self.rewards_per_episode.append(len(self.reward_free_memory))
-        self.reward_free_memory.clear()
+    
+    def add_episode_len(self, episode_len:int):
+        self.rewards_per_episode.append(episode_len)
+
 
     def learn(self):
         """
