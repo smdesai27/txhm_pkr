@@ -16,7 +16,6 @@ class PokerPolicyNet(nn.Module):
 
     def __init__(self, num_players:int=6, max_action_channels: int = None):
         super(PokerPolicyNet, self).__init__()
-        self.dropout = nn.Dropout(p=0.3)
         self.num_players = num_players
         self.actions_per_player = self.num_players * 2
 
@@ -51,7 +50,6 @@ class PokerPolicyNet(nn.Module):
         self.combined_fc = nn.Sequential(
             nn.Linear(2 * 256, 512),
             nn.ReLU(),
-            nn.Dropout(p=0.3)
         )
 
         # Output head
@@ -82,6 +80,9 @@ class Agent:
     """
     Agent class with PPO, GAE, and proper hyperparameter management.
     """
+
+    learning_rate_dict = {"inital":0.001, "middle":1e-4, "refine": 1e-5}
+
     def __init__(self, player_id: int, learning_rate: float = 0.001, 
                  discount_factor: float = 0.99, ppo_clip: float = 0.2, 
                  delta1: float = 2.2, delta2: float = 1.8, delta3: float = 1.0, 
@@ -89,7 +90,6 @@ class Agent:
                  num_players:int=6, max_action_channels: int = None):
         
         self.game = game
-        
         self.player_id = player_id
         self.gamma = discount_factor
         self.ppo_clip = ppo_clip
@@ -98,6 +98,8 @@ class Agent:
         self.delta3 = delta3
         self.gae_lambda = gae_lambda
         self.ppo_epochs = ppo_epochs
+
+        learning_rate = Agent.learning_rate_dict['middle']
 
         # Use GPU if available, otherwise CPU
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -202,6 +204,8 @@ class Agent:
         for _ in range(self.ppo_epochs):
             # Compute current logits and values
             logits, state_values = self.policy_net(card_tensors, action_tensors)
+            distribution = Categorical(logits=logits)
+            entropy_bonus = distribution.entropy().mean()
             
             # Actor Loss
             probs = F.softmax(logits, dim=-1)
@@ -224,10 +228,10 @@ class Agent:
             returns = advantages + values.detach()
             critic_loss = F.mse_loss(state_values.squeeze(1), returns)
 
-            # Total loss
-            loss = actor_loss + critic_loss
+            # --- Total loss with Entropy Bonus ---
+            entropy_dict = {"initial": 0.05, "refine": 0.01, "explore": 0.1}
+            loss = actor_loss + critic_loss - entropy_dict["initial"] * entropy_bonus
 
-            # Backpropagation
             self.optimizer.zero_grad()
             loss.backward()
             self.optimizer.step()
@@ -301,20 +305,31 @@ class Agent:
 
     def load_policy(self, file_path):
         """
-        Loads a pre-trained agent policy from a file.
-        :param file_path: The path to the file where the policy is saved.
+        Loads a pre-trained agent policy and optimizer state from a file.
         """
-        if not torch.cuda.is_available():
-            print("CUDA not available, loading on CPU.")
-
         try:
+            # Load the checkpoint dictionary from the file.
+            # map_location ensures it works correctly whether you're on a GPU or CPU machine.
             checkpoint = torch.load(file_path, map_location=self.device)
+
+            # Restore the weights of the neural network
             self.policy_net.load_state_dict(checkpoint['policy_state_dict'])
+
+            # Restore the state of the optimizer (important for resuming training)
             self.optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
+
             print(f"Policy successfully loaded from {file_path}")
+
         except FileNotFoundError:
-            print(f"Error: Policy file not found at {file_path}")
+            print(f"Error: Policy file not found at {file_path}. Starting with a new, untrained policy.")
         except Exception as e:
-            print(f"An error occurred while loading the policy: {e}")
-    
-    
+            # Catch any other potential errors during loading
+            print(f"An error occurred while loading the policy: {e}. Starting with a new, untrained policy.")
+        
+    def load_state_dict(self, dict):
+        self.policy_net.load_state_dict(dict)
+
+    def save_policy_dict(self):
+        return self.policy_net.state_dict()
+        
+        

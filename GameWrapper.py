@@ -40,15 +40,17 @@ class GameWrapper:
         self.actions_per_round_ct = 0
     
     def get_round_num(self):
-        return int(self.state.information_state_string(self.state.current_player()).split("[Round ")[1].split("]")[0])
-    
+        return int(self.state.information_state_string(1).split("[Round ")[1].split("]")[0])
 
     # takes action int and applys it to currnet state
     def apply_action(self, action_int : int, player_id: int = None):
         
         if player_id is None:
             player_id = self.state.current_player()
-        
+
+        # print(f'action int is {action_int}')
+        # print(f"action string to bet {self.state.action_to_string(int(player_id), int(action_int))}")
+
         round_number = self.get_round_num()
         l_a = np.array(self.legal_actions())
         self.update_alpha_holdem_action_tensor(player_id=player_id, action_int=action_int, round_number=round_number, legal_actions=l_a)

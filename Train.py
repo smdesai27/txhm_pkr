@@ -8,5 +8,5 @@ if __name__ == "__main__":
     if not torch.cuda.is_available():
         print("CUDA not available, running on CPU.")
 
-    handler.run_self_play_loop(num_iterations = 15000, num_episodes_per_iteration=300)
-    handler.save_policy()
+    handler.run_self_play_loop(num_iterations = 15000, num_episodes_per_iteration=300, resume_from_policy="kself_ft2_policy.pth")
+    handler.save_policy(path="final_policy.pth")
