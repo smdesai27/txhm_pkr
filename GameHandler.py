@@ -3,7 +3,7 @@ from Agent import Agent
 import random
 import torch
 import copy
-from NemesisAgent import NemesisAgent
+from NemesisBots import NemesisBot, NitBot, AggressiveBlufferBot
 
 class GameHandler:
 
@@ -49,11 +49,13 @@ class GameHandler:
         self.poker_agent_elo = self.INITIAL_ELO
 
         #IF REFINEING USE CALLING STATION NEMESIS AGENT
-        self.nemesis_agent = NemesisAgent(
+        self.nemesis_agent = NemesisBot(
             player_id=1,
             max_action_per_round=self.game.max_action_per_round
         )
-        
+        self.aggressive_bot = AggressiveBlufferBot(player_id=1, max_action_per_round=self.game.max_action_per_round)
+        self.nit_bot = NitBot(player_id=1, max_action_per_round=self.game.max_action_per_round)
+
         #historical agent pool
         # entries as dict {id : iteration, state_dict: weights, elo: rating}
         self.historical_pool = []
@@ -65,6 +67,13 @@ class GameHandler:
             'elo': 1600,
             'type': 'nemesis' # A flag to identify this special agent
         })
+        self.historical_pool.append({
+            'id': 'aggressive-bluffer', 'state_dict': None, 'elo': 1200, 'type': 'aggressive'
+        })
+        self.historical_pool.append({
+            'id': 'nit-bot', 'state_dict': None, 'elo': 1200, 'type': 'nit'
+        })
+
     
     def _add_agent_to_pool(self, iteration):
         """Clones the main agent's policy and adds it to the historical pool."""
@@ -101,7 +110,28 @@ class GameHandler:
 
     def take_random_legal_actions(self):
         while self.game.check_chance_node() and not self.game.check_terminal():
-            self.game.random_chance_node()  
+            self.game.random_chance_node()
+    
+    def add_agent_topool_from_save(self, path:str):
+        temp_agent = Agent(
+                player_id=99,  
+                game=self.game,
+                num_players=self.config["numPlayers"],
+                max_action_channels=self.game.max_channels
+            )
+        print(f"--- Snapshotting agent from iteration {path} into the pool. ---")
+        # We use deepcopy to ensure the state_dict is a separate object
+        temp_agent.load_policy(file_path=path)
+        state_dict = copy.deepcopy(temp_agent.save_policy_dict())
+        new_historical_agent = {
+                'id': f'loaded_{path}',
+                'state_dict': state_dict,
+                'elo': 1200, 
+                'type': 'historical'
+            }
+        self.historical_pool.append(new_historical_agent)
+        print(f"--- Agent from {path} successfully added. Pool size: {len(self.historical_pool)} ---")
+
 
     def to_string(self):
         return self.game.to_string()    
@@ -121,7 +151,7 @@ class GameHandler:
             print(f"--- Iteration {i+1}/{num_iterations} ---")
             # --- 1. Snapshot the agent periodically ---
             if i % 4000 == 0:
-                self.save_policy(path=f"poker_ft3_policy_{i}.pth")
+                self.save_policy(path=f"poker_ft4_policy_{i}.pth")
             if i % self.SAVE_FREQUENCY == 0:
                 self._add_agent_to_pool(i)
 
@@ -134,11 +164,14 @@ class GameHandler:
 
             # 1. Generate new self-play trajectories
             for _ in range(num_episodes_per_iteration):
-
                 opponent_data = random.choice(opponents)
                 active_opponent = None
                 if opponent_data.get('type') == 'nemesis':
                     active_opponent = self.nemesis_agent
+                elif opponent_data.get('type') == 'aggressive':
+                    active_opponent = self.aggressive_bot
+                elif opponent_data.get('type') == 'nit':
+                    active_opponent = self.nit_bot
                 else:
                     active_opponent = Agent(player_id=1, game=self.game, num_players=self.config["numPlayers"], max_action_channels=self.game.max_channels)
                     active_opponent.load_state_dict(opponent_data['state_dict'])
