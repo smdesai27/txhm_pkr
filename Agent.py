@@ -87,7 +87,8 @@ class Agent:
                  discount_factor: float = 0.99, ppo_clip: float = 0.2, 
                  delta1: float = 2.2, delta2: float = 1.8, delta3: float = 1.0, 
                  gae_lambda: float = 0.95, ppo_epochs: int = 5, game = None, 
-                 num_players:int=6, max_action_channels: int = None):
+                 num_players:int=6, max_action_channels: int = None,
+                 epsilon_start=0.5, epsilon_decay=0.9995, epsilon_min=0.01):
         
         self.game = game
         self.player_id = player_id
@@ -99,7 +100,12 @@ class Agent:
         self.gae_lambda = gae_lambda
         self.ppo_epochs = ppo_epochs
 
-        learning_rate = Agent.learning_rate_dict['middle']
+        learning_rate = Agent.learning_rate_dict['refine']
+
+        # Epsilon for exploration ---
+        self.epsilon = epsilon_start
+        self.epsilon_decay = epsilon_decay
+        self.epsilon_min = epsilon_min
 
         # Use GPU if available, otherwise CPU
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -108,6 +114,8 @@ class Agent:
         self.policy_net = PokerPolicyNet(num_players=num_players, max_action_channels=max_action_channels).to(self.device)
         self.optimizer = optim.Adam(self.policy_net.parameters(), lr=learning_rate)
         
+        self.scheduler = optim.lr_scheduler.StepLR(self.optimizer, step_size=1000, gamma=0.9)
+
         # Memory to store trajectories for PPO updates
         self.memory = []
         self.rewards_per_episode = []
@@ -116,25 +124,39 @@ class Agent:
         """
         Selects an action using an epsilon-greedy strategy with the DQN.
         """
+        if random.random() < self.epsilon:
+            action = random.choice(legal_actions)
+            # When taking a random action, we still need to calculate its log_prob and state value for training
+            self.policy_net.eval()
+            with torch.no_grad():
+                card_tensor_t = torch.tensor(card_tensor, dtype=torch.float32, device=self.device).unsqueeze(0)
+                action_tensor_t = torch.tensor(action_tensor, dtype=torch.float32, device=self.device).unsqueeze(0)
+                action_logits, state_value = self.policy_net(card_tensor_t, action_tensor_t)
+                
+                masked_logits = torch.full_like(action_logits, -float('inf'))
+                masked_logits[0, legal_actions] = action_logits[0, legal_actions]
+                
+                distribution = Categorical(logits=masked_logits)
+                log_prob = distribution.log_prob(torch.tensor(action, device=self.device))
+            return action, log_prob, state_value.squeeze(0)
+
+        # --- Original Policy-Based Action Selection ---
         self.policy_net.eval()
         with torch.no_grad():
-
             card_tensor_t = torch.tensor(card_tensor, dtype=torch.float32, device=self.device).unsqueeze(0)
             action_tensor_t = torch.tensor(action_tensor, dtype=torch.float32, device=self.device).unsqueeze(0)
 
             action_logits, state_value = self.policy_net(card_tensor_t, action_tensor_t)
 
             masked_logits = torch.full_like(action_logits, -float('inf'))
-
-            masked_logits = torch.full_like(action_logits, -float('inf'))
             masked_logits[0, legal_actions] = action_logits[0, legal_actions]
-
 
             distribution = Categorical(logits=masked_logits)
             action = distribution.sample()
             log_prob = distribution.log_prob(action)
 
             return action.item(), log_prob, state_value.squeeze(0)
+    
 
     
     def store_final_transition(self, transition, reward):
@@ -230,16 +252,23 @@ class Agent:
 
             # --- Total loss with Entropy Bonus ---
             entropy_dict = {"initial": 0.05, "refine": 0.01, "explore": 0.1}
-            loss = actor_loss + critic_loss - entropy_dict["initial"] * entropy_bonus
+            loss = actor_loss + critic_loss - entropy_dict["explore"] * entropy_bonus
 
             self.optimizer.zero_grad()
             loss.backward()
+
+            # --- NEW: Gradient Clipping ---
+            torch.nn.utils.clip_grad_norm_(self.policy_net.parameters(), max_norm=0.5)
+
             self.optimizer.step()
 
             actor_losses.append(actor_loss.item())
             critic_losses.append(critic_loss.item())
 
         # Clear memory after all epochs
+        self.scheduler.step()
+        self.epsilon = max(self.epsilon_min, self.epsilon * self.epsilon_decay)
+
         self.prev_mem_len = len(self.memory)
         self.memory.clear()
         self.rewards_per_episode.clear()
@@ -253,7 +282,8 @@ class Agent:
         """
         torch.save({
             'policy_state_dict': self.policy_net.state_dict(),
-            'optimizer_state_dict': self.optimizer.state_dict()
+            'optimizer_state_dict': self.optimizer.state_dict(),
+            'scheduler_state_dict': self.scheduler.state_dict()
         }, file_path)
         print(f'policy saved to {file_path}')
 
@@ -317,6 +347,12 @@ class Agent:
 
             # Restore the state of the optimizer (important for resuming training)
             self.optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
+
+            # Load scheduler and epsilon if they exist in the checkpoint
+            if 'scheduler_state_dict' in checkpoint:
+                self.scheduler.load_state_dict(checkpoint['scheduler_state_dict'])
+            if 'epsilon' in checkpoint:
+                self.epsilon = checkpoint['epsilon']
 
             print(f"Policy successfully loaded from {file_path}")
 
