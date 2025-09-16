@@ -3,10 +3,8 @@ import numpy as np
 import torch
 import torch.nn as nn #type:ignore
 import torch.optim as optim #type:ignore
-import torch.nn.functional as F #type:ignore
 from torch.distributions import Categorical
-
-# (Your PokerPolicyNet class remains the same here)
+import torch.nn.functional as F  #type:ignore
 class PokerPolicyNet(nn.Module):
     """
     A deep q-network for playing poker
@@ -82,7 +80,7 @@ class Agent:
     Agent class with PPO, GAE, and proper hyperparameter management.
     Includes fixes for training instability and exploration.
     """
-    def __init__(self, player_id: int, learning_rate: float = 1e-5, # Lowered default LR
+    def __init__(self, player_id: int, learning_rate: float = .0001,
                  discount_factor: float = 0.99, ppo_clip: float = 0.2, 
                  delta1: float = 2.2, delta2: float = 1.8, delta3: float = 1.0, 
                  gae_lambda: float = 0.95, ppo_epochs: int = 5, game = None, 
@@ -225,7 +223,7 @@ class Agent:
             critic_loss = F.mse_loss(state_values.squeeze(1), returns)
             
             entropy_dict = {"initial": 0.05, "refine": 0.01, "explore": 0.1}
-            loss = actor_loss + critic_loss - entropy_dict["initial"] * entropy_bonus
+            loss = actor_loss + critic_loss - entropy_dict["explore"] * entropy_bonus
 
             self.optimizer.zero_grad()
             loss.backward()

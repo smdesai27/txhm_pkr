@@ -12,6 +12,6 @@ if __name__ == "__main__":
     # handler.run_self_play_loop()
     
     # Load the trained policy from the filed
-    handler.load_policy(file_path="final_policy.pth")
+    handler.load_policy(file_path="poker_ft4_4000.pth")
     # Call the new watch_playthrough method to see the agent in action
     handler.watch_playthrough(num_episodes=70)
