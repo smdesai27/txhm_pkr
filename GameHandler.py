@@ -9,7 +9,7 @@ class GameHandler:
 
     num_players = 2
 
-    # k self play params -- designed for 2 players 
+    # k self play params -- designed for 2 players at the moment
     K_OPPONENTS = 10
     SAVE_FREQUENCY = 1000
     INITIAL_ELO = 1200

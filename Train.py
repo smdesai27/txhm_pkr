@@ -11,5 +11,6 @@ if __name__ == "__main__":
     handler.add_agent_topool_from_save(path="kself_ft3_policy.pth")
     handler.add_agent_topool_from_save(path="kself_ft2_policy.pth")
     handler.add_agent_topool_from_save(path="kself_policy.pth")
-    handler.run_self_play_loop(num_iterations = 30000, num_episodes_per_iteration=300)
+
+    handler.run_self_play_loop(num_iterations = 50000, num_episodes_per_iteration=300, resume_from_policy= "v2.2_policy.pth")
     handler.save_policy(path="final_policy.pth")
