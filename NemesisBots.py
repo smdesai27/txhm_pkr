@@ -4,15 +4,43 @@ import numpy as np
 class NemesisBot:
     """
     A rule-based agent designed to encourage post-flop play.
-    - Pre-flop: Acts as a "Calling Station" to punish hyper-aggression.
+    - Pre-flop: Calls with reasonable hands (top 60%), folds weak hands to avoid being too exploitable
     - Post-flop: Acts as a "Check/Raise Bot" to create bluffing opportunities
       and punish mindless continuation betting.
     """
     RAISE_PROBABILITY = 0.3 # 30% chance to raise when facing a bet post-flop
+    PREFLOP_CALL_THRESHOLD = 0.40  # Fold bottom 40% of hands pre-flop
 
     def __init__(self, player_id, max_action_per_round):
         self.player_id = player_id
         self.max_action_per_round = max_action_per_round
+
+    def _estimate_hand_strength(self, card_tensor):
+        """
+        Simple hand strength estimation based on hole cards.
+        Returns a value between 0 and 1, where higher is stronger.
+        """
+        hole_cards_plane = card_tensor[0]
+        ranks = np.where(np.any(hole_cards_plane, axis=0))[0]
+        
+        if len(ranks) == 0:
+            return 0.0
+        
+        # Pocket pair bonus
+        if len(ranks) == 1:
+            # Pocket pair - rank goes from 0 (22) to 12 (AA)
+            return 0.5 + (ranks[0] / 24.0)  # Range: 0.5 to 1.0
+        
+        # High card strength
+        if len(ranks) == 2:
+            high_card = max(ranks)
+            low_card = min(ranks)
+            # Strong high cards get higher values
+            strength = (high_card + low_card) / 24.0  # Range: 0.0 to 1.0
+            # Bonus for suited (we don't check suits here, so approximate)
+            return strength
+        
+        return 0.3  # Default moderate strength
 
     def select_action(self, action_tensor, card_tensor, legal_actions):
         """
@@ -34,12 +62,21 @@ class NemesisBot:
         CAN_CHECK_OR_CALL = 1 in legal_actions
 
         if current_round == 0:
-            # --- PRE-FLOP LOGIC: Be a Calling Station ---
-            # If we can call, we always call to see a flop.
-            if CAN_CHECK_OR_CALL:
-                action = 1
-            else: # Should not happen, but as a fallback, fold.
-                action = 0
+            # --- FIXED PRE-FLOP LOGIC: Fold weak hands, call with decent hands ---
+            hand_strength = self._estimate_hand_strength(card_tensor)
+            
+            if hand_strength < self.PREFLOP_CALL_THRESHOLD:
+                # Weak hand - fold if facing a bet
+                if 0 in legal_actions:  # Facing a bet
+                    action = 0  # Fold
+                elif CAN_CHECK_OR_CALL:
+                    action = 1  # Check for free
+            else:
+                # Decent hand - call to see flop
+                if CAN_CHECK_OR_CALL:
+                    action = 1
+                else:
+                    action = 0  # Fold if can't call
         else:
             # --- POST-FLOP LOGIC: Be a Check/Raise Bot ---
             # Heuristic: If fold (0) is NOT a legal action, it means we can check for free.
@@ -259,4 +296,159 @@ class NitBot:
         if action not in legal_actions:
             action = 0 if 0 in legal_actions else random.choice(legal_actions)
 
+        return action, 0.0, 0.0
+
+
+class BalancedTAGBot:
+    """
+    A Tight-Aggressive (TAG) bot that plays a balanced, GTO-approximation strategy.
+    
+    - Pre-flop: Plays premium hands aggressively, good hands cautiously, folds weak hands
+    - Post-flop: Uses hand strength and pot odds to make balanced decisions
+    - Bet sizing: Uses varied bet sizes based on situation
+    """
+    PREMIUM_THRESHOLD = 0.75  # Top 25% of hands
+    PLAYABLE_THRESHOLD = 0.50  # Top 50% of hands
+    POSTFLOP_STRENGTH_THRESHOLD = 0.60
+    BLUFF_FREQUENCY = 0.15  # 15% bluff frequency
+    
+    def __init__(self, player_id, max_action_per_round):
+        self.player_id = player_id
+        self.max_action_per_round = max_action_per_round
+        self.preflop_strength = 0.0
+    
+    def _estimate_hand_strength(self, card_tensor):
+        """Estimate hand strength from 0 to 1."""
+        hole_cards_plane = card_tensor[0]
+        ranks = np.where(np.any(hole_cards_plane, axis=0))[0]
+        
+        if len(ranks) == 0:
+            return 0.0
+        
+        # Pocket pair
+        if len(ranks) == 1:
+            # AA=12, 22=0, scale from 0.6 to 1.0
+            return 0.6 + (ranks[0] / 30.0)
+        
+        # Two cards
+        if len(ranks) == 2:
+            high_card = max(ranks)
+            low_card = min(ranks)
+            gap = high_card - low_card
+            
+            # High cards are strong
+            base_strength = (high_card + low_card) / 24.0
+            
+            # Penalize large gaps
+            gap_penalty = gap * 0.02
+            
+            return max(0.0, min(1.0, base_strength - gap_penalty))
+        
+        return 0.3
+    
+    def _has_made_hand(self, card_tensor):
+        """Check if we have a pair or better."""
+        hole_cards_plane = card_tensor[0]
+        board_cards_plane = card_tensor[4]
+        
+        hole_ranks = np.where(np.any(hole_cards_plane, axis=0))[0]
+        board_ranks = np.where(np.any(board_cards_plane, axis=0))[0]
+        
+        # Check for pair
+        for rank in hole_ranks:
+            if rank in board_ranks:
+                return True
+        
+        # Check if we have a pocket pair
+        if len(hole_ranks) == 1:
+            return True
+        
+        return False
+    
+    def select_action(self, action_tensor, card_tensor, legal_actions):
+        """Balanced TAG strategy."""
+        # Infer current round
+        last_action_indices = np.where(np.any(action_tensor, axis=(1, 2)))[0]
+        current_round = 0
+        if last_action_indices.size > 0:
+            last_action_channel = last_action_indices[-1]
+            current_round = last_action_channel // self.max_action_per_round
+        else:
+            self.preflop_strength = self._estimate_hand_strength(card_tensor)
+        
+        action = 0
+        CAN_CHECK_OR_CALL = 1 in legal_actions
+        raise_actions = [a for a in legal_actions if a > 1]
+        is_facing_bet = 0 in legal_actions
+        
+        if current_round == 0:
+            # PRE-FLOP: Tight-aggressive approach
+            hand_strength = self._estimate_hand_strength(card_tensor)
+            
+            if hand_strength >= self.PREMIUM_THRESHOLD:
+                # Premium hands: raise aggressively
+                if raise_actions:
+                    # Prefer smaller raises pre-flop
+                    action = raise_actions[0] if len(raise_actions) > 0 else raise_actions[0]
+                elif CAN_CHECK_OR_CALL:
+                    action = 1
+            elif hand_strength >= self.PLAYABLE_THRESHOLD:
+                # Playable hands: call or small raise
+                if is_facing_bet:
+                    if CAN_CHECK_OR_CALL:
+                        action = 1  # Call
+                else:
+                    # First to act: mix of raise and check
+                    if raise_actions and random.random() < 0.4:
+                        action = raise_actions[0]
+                    elif CAN_CHECK_OR_CALL:
+                        action = 1
+            else:
+                # Weak hands: fold to bets, check if free
+                if is_facing_bet:
+                    action = 0  # Fold
+                elif CAN_CHECK_OR_CALL:
+                    action = 1  # Check
+        
+        else:
+            # POST-FLOP: Balanced play
+            has_hand = self._has_made_hand(card_tensor)
+            
+            if has_hand or self.preflop_strength >= self.PREMIUM_THRESHOLD:
+                # Strong hand: bet for value
+                if not is_facing_bet:
+                    # First to act: bet frequently
+                    if raise_actions and random.random() < 0.7:
+                        # Use varied bet sizes
+                        action = random.choice(raise_actions)
+                    elif CAN_CHECK_OR_CALL:
+                        action = 1
+                else:
+                    # Facing a bet: call or raise
+                    if raise_actions and random.random() < 0.3:
+                        action = random.choice(raise_actions[:2])  # Don't all-in often
+                    elif CAN_CHECK_OR_CALL:
+                        action = 1
+            else:
+                # Weak hand: bluff occasionally or fold
+                if not is_facing_bet:
+                    # First to act: bluff sometimes
+                    if raise_actions and random.random() < self.BLUFF_FREQUENCY:
+                        action = raise_actions[0]  # Small bluff
+                    elif CAN_CHECK_OR_CALL:
+                        action = 1  # Check
+                else:
+                    # Facing a bet: mostly fold, occasionally bluff-raise
+                    if raise_actions and random.random() < 0.05:
+                        action = raise_actions[0]
+                    else:
+                        action = 0  # Fold
+        
+        # Safety check
+        if action not in legal_actions:
+            if CAN_CHECK_OR_CALL:
+                action = 1
+            else:
+                action = 0
+        
         return action, 0.0, 0.0

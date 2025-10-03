@@ -9,6 +9,7 @@ class PokerPolicyNet(nn.Module):
     """
     A deep q-network for playing poker
     process two seperate inputs: a card tensor and an action history tensor
+    Now also includes stack features for better decision making
     """
     action_space_size = 5
 
@@ -43,10 +44,19 @@ class PokerPolicyNet(nn.Module):
             nn.ReLU()
         )
 
+        # added stick featuers
+        # Processes [my_stack, opp_stack, pot_size, spr]
+        self.stack_tower = nn.Sequential(
+            nn.Linear(4, 32),
+            nn.ReLU(),
+            nn.Linear(32, 64),
+            nn.ReLU()
+        )
+
         # Create combined head 
-        # concatinates both card and action features
+        # concatinates card, action, and stack features
         self.combined_fc = nn.Sequential(
-            nn.Linear(2 * 256, 512),
+            nn.Linear(2 * 256 + 64, 512),  # Added 64 for stack features
             nn.ReLU(),
         )
 
@@ -57,13 +67,21 @@ class PokerPolicyNet(nn.Module):
         # Critic head: outputs single state value
         self.critic_head = nn.Linear(512, 1)
 
-    def forward(self, card_tensor, action_tensor):
+    def forward(self, card_tensor, action_tensor, stack_tensor=None):
         # Process each tensor in its respective tower
         card_features = self.card_tower(card_tensor)
         action_features = self.action_tower(action_tensor)
 
-        # Concatenate the feature vectors from both towers
-        combined_features = torch.cat((card_features, action_features), dim=1)
+        # Process stack features if provided (backward compatible)
+        if stack_tensor is not None:
+            stack_features = self.stack_tower(stack_tensor)
+            # Concatenate all feature vectors
+            combined_features = torch.cat((card_features, action_features, stack_features), dim=1)
+        else:
+            # Fallback: use zero stack features for backward compatibility
+            batch_size = card_features.shape[0]
+            zero_stack_features = torch.zeros((batch_size, 64), device=card_features.device)
+            combined_features = torch.cat((card_features, action_features, zero_stack_features), dim=1)
 
         # pass thru fully connected layer
         shared_ouput = self.combined_fc(combined_features)
@@ -80,9 +98,9 @@ class Agent:
     Agent class with PPO, GAE, and proper hyperparameter management.
     Includes fixes for training instability and exploration.
     """
-    def __init__(self, player_id: int, learning_rate: float = .0001,
+    def __init__(self, player_id: int, learning_rate: float = .00003,
                  discount_factor: float = 0.99, ppo_clip: float = 0.2, 
-                 delta1: float = 2.2, delta2: float = 1.8, delta3: float = 1.0, 
+                 delta1: float = 1.5, delta2: float = 1.2, delta3: float = 0.8, 
                  gae_lambda: float = 0.95, ppo_epochs: int = 5, game = None, 
                  num_players:int=6, max_action_channels: int = None,
                  epsilon_start=0.5, epsilon_decay=0.9995, epsilon_min=0.01):
@@ -109,22 +127,29 @@ class Agent:
         self.policy_net = PokerPolicyNet(num_players=num_players, max_action_channels=max_action_channels).to(self.device)
         self.optimizer = optim.Adam(self.policy_net.parameters(), lr=self.learning_rate)
         
-        self.scheduler = optim.lr_scheduler.StepLR(self.optimizer, step_size=1000, gamma=0.9)
+        self.scheduler = optim.lr_scheduler.StepLR(self.optimizer, step_size=5000, gamma=0.9)  # FIXED: Increased step_size
 
         self.memory = []
         self.rewards_per_episode = []
 
-    def select_action(self, action_tensor: np.array, card_tensor: np.array, legal_actions: list) -> tuple[int, torch.Tensor, torch.Tensor]:
+    def select_action(self, action_tensor: np.array, card_tensor: np.array, legal_actions: list, stack_tensor: np.array = None) -> tuple[int, torch.Tensor, torch.Tensor]:
         """
-        Selects an action using an epsilon-greedy strategy.
+        Selects an action using an epsilon-greedy strategy with weighted exploration.
         """
         if random.random() < self.epsilon:
-            action = random.choice(legal_actions)
+            # --- FIXED: Weighted exploration favoring conservative actions ---
+            # Weights: [Fold: 0.15, Call: 0.45, Raise1: 0.25, Raise2: 0.10, All-in: 0.05]
+            action_weights = [0.15, 0.45, 0.25, 0.10, 0.05]
+            available_weights = [action_weights[a] for a in legal_actions]
+            normalized_weights = np.array(available_weights) / sum(available_weights)
+            action = np.random.choice(legal_actions, p=normalized_weights)
+            
             self.policy_net.eval()
             with torch.no_grad():
                 card_tensor_t = torch.tensor(card_tensor, dtype=torch.float32, device=self.device).unsqueeze(0)
                 action_tensor_t = torch.tensor(action_tensor, dtype=torch.float32, device=self.device).unsqueeze(0)
-                action_logits, state_value = self.policy_net(card_tensor_t, action_tensor_t)
+                stack_tensor_t = torch.tensor(stack_tensor, dtype=torch.float32, device=self.device).unsqueeze(0) if stack_tensor is not None else None
+                action_logits, state_value = self.policy_net(card_tensor_t, action_tensor_t, stack_tensor_t)
                 
                 masked_logits = torch.full_like(action_logits, -float('inf'))
                 masked_logits[0, legal_actions] = action_logits[0, legal_actions]
@@ -137,8 +162,9 @@ class Agent:
         with torch.no_grad():
             card_tensor_t = torch.tensor(card_tensor, dtype=torch.float32, device=self.device).unsqueeze(0)
             action_tensor_t = torch.tensor(action_tensor, dtype=torch.float32, device=self.device).unsqueeze(0)
+            stack_tensor_t = torch.tensor(stack_tensor, dtype=torch.float32, device=self.device).unsqueeze(0) if stack_tensor is not None else None
 
-            action_logits, state_value = self.policy_net(card_tensor_t, action_tensor_t)
+            action_logits, state_value = self.policy_net(card_tensor_t, action_tensor_t, stack_tensor_t)
 
             masked_logits = torch.full_like(action_logits, -float('inf'))
             masked_logits[0, legal_actions] = action_logits[0, legal_actions]
@@ -151,7 +177,7 @@ class Agent:
     
     def store_final_transition(self, transition, reward):
         self.memory.append({
-                "obs": transition["obs"],
+                "obs": transition["obs"],  # Now includes (card_tensor, action_tensor, stack_tensor)
                 "action": transition["action"],
                 "log_prob": transition["log_prob"].detach(),
                 "reward": reward,
@@ -176,8 +202,9 @@ class Agent:
         rewards = np.array([m["reward"] for m in self.memory], dtype=np.float32)
         values = torch.stack([m["value"] for m in self.memory]).squeeze(1).to(self.device)
 
-        # --- NEW: Reward Normalization for added stability ---
-        rewards = (rewards - rewards.mean()) / (rewards.std() + 1e-10)
+        # --- FIXED: Reward scaling instead of normalization to preserve magnitude ---
+        # This preserves the difference between winning small pots and large all-in pots
+        rewards = rewards / 10000.0  # Scale by typical stack size
 
         # --- GAE Calculation ---
         advantages = np.zeros_like(rewards, dtype=np.float32)
@@ -194,16 +221,23 @@ class Agent:
                 last_advantage = advantages[start_index + t]
             start_index = end_index
         advantages = torch.tensor(advantages, dtype=torch.float32, device=self.device)
-        advantages = (advantages - advantages.mean()) / (advantages.std() + 1e-10)
+        
+        # --- FIXED: Use clipping instead of normalization to preserve magnitude ---
+        advantages = torch.clamp(advantages, -10.0, 10.0)
 
         # --- PPO Epochs and Loss Calculation ---
         card_tensors = torch.stack([torch.tensor(obs[0], dtype=torch.float32, device=self.device) for obs in obs_batch])
         action_tensors = torch.stack([torch.tensor(obs[1], dtype=torch.float32, device=self.device) for obs in obs_batch])
+        # Handle stack tensors (may be None for backward compatibility)
+        stack_tensors = None
+        if len(obs_batch[0]) > 2 and obs_batch[0][2] is not None:
+            stack_tensors = torch.stack([torch.tensor(obs[2], dtype=torch.float32, device=self.device) for obs in obs_batch])
+        
         actor_losses = []
         critic_losses = []
         
         for _ in range(self.ppo_epochs):
-            logits, state_values = self.policy_net(card_tensors, action_tensors)
+            logits, state_values = self.policy_net(card_tensors, action_tensors, stack_tensors)
             distribution = Categorical(logits=logits)
             entropy_bonus = distribution.entropy().mean()
             
@@ -222,8 +256,9 @@ class Agent:
             returns = advantages + values.detach()
             critic_loss = F.mse_loss(state_values.squeeze(1), returns)
             
-            entropy_dict = {"initial": 0.05, "refine": 0.01, "explore": 0.1}
-            loss = actor_loss + critic_loss - entropy_dict["explore"] * entropy_bonus
+            # --- FIXED: Reduced entropy bonus to prevent excessive exploration ---
+            entropy_coefficient = 0.01  # Reduced from 0.1 to encourage more conservative play
+            loss = actor_loss + critic_loss - entropy_coefficient * entropy_bonus
 
             self.optimizer.zero_grad()
             loss.backward()
@@ -272,7 +307,7 @@ class Agent:
             if 'epsilon' in checkpoint:
                 self.epsilon = checkpoint['epsilon']
 
-            print(f"Policy successfully loaded from {file_path} with LR set to {self.learning_rate}")
+            print(f"Policy successfully loaded from {file_path}")
 
         except FileNotFoundError:
             print(f"Error: Policy file not found at {file_path}. Starting with a new, untrained policy.")

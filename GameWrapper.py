@@ -159,6 +159,38 @@ class GameWrapper:
     def get_rewards(self):
         return self.state.returns()
     
+    def get_stack_features(self, player_id: int):
+        """
+        Returns normalized stack features for stack-awareness.
+        Returns: [my_stack, opp_stack, pot_size, spr]
+        """
+        # Get stack information from the state string
+        info_str = self.state.information_state_string(player_id)
+        
+        # Parse stack sizes - they appear in the state string
+        # Format varies, but we can use the observation tensor or parse strings
+        try:
+            # Try to get from state observation
+            my_stack = self.state.player_chips(player_id)
+            opp_stack = self.state.player_chips(1 - player_id) if self.num_players == 2 else 20000
+            pot_size = sum(self.state.player_ante(p) for p in range(self.num_players))
+        except:
+            # Fallback to default values if parsing fails
+            my_stack = 20000
+            opp_stack = 20000
+            pot_size = 150
+        
+        # Normalize by initial stack size
+        my_stack_norm = my_stack / 20000.0
+        opp_stack_norm = opp_stack / 20000.0
+        pot_size_norm = pot_size / 20000.0
+        
+        # Calculate stack-to-pot ratio (SPR)
+        spr = my_stack / max(pot_size, 1.0)
+        spr_norm = min(spr / 100.0, 1.0)  # Normalize, cap at 1.0
+        
+        return np.array([my_stack_norm, opp_stack_norm, pot_size_norm, spr_norm], dtype=np.float32)
+    
     def reset_hand(self):
         self.state = self.game.new_initial_state()
         self.reset_alpha_holdem_action_tensor()

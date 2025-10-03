@@ -1,9 +1,10 @@
 from GameWrapper import GameWrapper
 from Agent import Agent
-import random
+import numpy as np
 import torch
 import copy
-from NemesisBots import NemesisBot, NitBot, AggressiveBlufferBot
+import random
+from NemesisBots import NemesisBot, NitBot, AggressiveBlufferBot, BalancedTAGBot
 
 class GameHandler:
 
@@ -55,6 +56,7 @@ class GameHandler:
         )
         self.aggressive_bot = AggressiveBlufferBot(player_id=1, max_action_per_round=self.game.max_action_per_round)
         self.nit_bot = NitBot(player_id=1, max_action_per_round=self.game.max_action_per_round)
+        self.tag_bot = BalancedTAGBot(player_id=1, max_action_per_round=self.game.max_action_per_round)  # NEW
 
         #historical agent pool
         # entries as dict {id : iteration, state_dict: weights, elo: rating}
@@ -64,7 +66,7 @@ class GameHandler:
         self.historical_pool.append({
             'id': 'nemesis-calling-station',
             'state_dict': None, # No neural network
-            'elo': 1600,
+            'elo': 1000,  # FIXED: Reduced from 1600 to 1000 to lower sampling frequency
             'type': 'nemesis' # A flag to identify this special agent
         })
         self.historical_pool.append({
@@ -72,6 +74,9 @@ class GameHandler:
         })
         self.historical_pool.append({
             'id': 'nit-bot', 'state_dict': None, 'elo': 1200, 'type': 'nit'
+        })
+        self.historical_pool.append({
+            'id': 'tag-bot', 'state_dict': None, 'elo': 1400, 'type': 'tag'  # NEW: Higher ELO for balanced bot
         })
 
     
@@ -163,6 +168,7 @@ class GameHandler:
                 opponents = [{'id': 0, 'state_dict': self.poker_agent.save_policy_dict(), 'elo': self.poker_agent_elo}]
 
             # 1. Generate new self-play trajectories
+            action_counts = {0: 0, 1: 0, 2: 0, 3: 0, 4: 0}  # Track action distribution
             for _ in range(num_episodes_per_iteration):
                 opponent_data = random.choice(opponents)
                 active_opponent = None
@@ -172,6 +178,8 @@ class GameHandler:
                     active_opponent = self.aggressive_bot
                 elif opponent_data.get('type') == 'nit':
                     active_opponent = self.nit_bot
+                elif opponent_data.get('type') == 'tag':
+                    active_opponent = self.tag_bot  # NEW
                 else:
                     active_opponent = Agent(player_id=1, game=self.game, num_players=self.config["numPlayers"], max_action_channels=self.game.max_channels)
                     active_opponent.load_state_dict(opponent_data['state_dict'])
@@ -199,17 +207,22 @@ class GameHandler:
 
                     card_tensor = self.game.get_card_tensor(current_player_id)
                     action_tensor = self.game.get_action_tensor()
+                    stack_tensor = self.game.get_stack_features(current_player_id)  # NEW: Get stack features
 
                     action, log_prob, value = active_agent.select_action(
                         action_tensor= action_tensor,
                         card_tensor= card_tensor,
-                        legal_actions=self.game.legal_actions()
+                        legal_actions=self.game.legal_actions(),
+                        stack_tensor=stack_tensor  # NEW: Pass stack features
                     )
                     
                     #store transition to assign reward to coorect player
                     if current_player_id == 0:
+                        # Track action for logging
+                        action_counts[action] += 1
+                        
                         episode_transitions.append({
-                        "obs": (card_tensor, action_tensor),
+                        "obs": (card_tensor, action_tensor, stack_tensor),  # NEW: Include stack tensor
                         "action": action,
                         "log_prob": log_prob,
                         "value": value,
@@ -242,20 +255,40 @@ class GameHandler:
                             agent_in_pool['elo'] = opponent_data['elo']
                             break
 
-                #store transition and rewards
+                #store transition and rewards with reward shaping
                 for transition in episode_transitions:
-                    reward = final_rewards[0]
-                    # Pass the full transition and its correct reward to the agent
-                    self.poker_agent.store_final_transition(transition, reward)
+                    base_reward = final_rewards[0]
+                    
+                    # --- NEW: Reward shaping to penalize unnecessary all-ins ---
+                    shaped_reward = base_reward
+                    if transition['action'] == 4:  # All-in action
+                        # Get stack ratio from the stored stack tensor
+                        stack_ratio = transition['obs'][2][0]  # my_stack_norm from stack_tensor
+                        if stack_ratio > 0.5:  # Deep-stacked (more than 50% of starting stack)
+                            # Small penalty for risky all-in play when deep
+                            shaped_reward -= 0.05  # Scaled penalty (after reward scaling by 10000)
+                    
+                    # Pass the full transition and its shaped reward to the agent
+                    self.poker_agent.store_final_transition(transition, shaped_reward)
 
                 if episode_transitions: # Avoid adding zero if an episode had no transitions
                     self.poker_agent.add_episode_len(len(episode_transitions))
             
             actor_loss, critic_loss = self.poker_agent.learn()
             
+            # --- NEW: Action distribution logging ---
+            total_actions = sum(action_counts.values())
+            if total_actions > 0:
+                action_percentages = {k: (v / total_actions) * 100 for k, v in action_counts.items()}
+                print(f"Action distribution: Fold: {action_percentages[0]:.1f}%, Call: {action_percentages[1]:.1f}%, "
+                      f"Raise1: {action_percentages[2]:.1f}%, Raise2: {action_percentages[3]:.1f}%, All-in: {action_percentages[4]:.1f}%")
+            
             print(f"Agent trained on {self.poker_agent.prev_mem_len} transitions.")
             print(f"Average Actor Loss: {actor_loss:.4f}, Average Critic Loss: {critic_loss:.4f}")
             print(f"Pool size: {len(self.historical_pool)}")
+            print(f"Current epsilon: {self.poker_agent.epsilon:.4f}")
+            print(f"Current LR: {self.poker_agent.optimizer.param_groups[0]['lr']:.6f}")
+            print("")
 
 
     def save_policy(self, path:str="poker_policy.pth"):
@@ -289,10 +322,11 @@ class GameHandler:
                 current_player = self.game.get_current_player()
                 card_tensor = self.game.get_card_tensor(current_player)
                 action_tensor = self.game.get_action_tensor()
+                stack_tensor = self.game.get_stack_features(current_player)  # NEW
                 legal_actions = self.game.legal_actions()
 
                 # Get the action from the agent's policy without exploration
-                action, _, _ = poker_agent.select_action(action_tensor, card_tensor, legal_actions)
+                action, _, _ = poker_agent.select_action(action_tensor, card_tensor, legal_actions, stack_tensor)  # NEW
 
                 # Print the action and game state
                 print(f"Player {current_player} takes action: {action}")

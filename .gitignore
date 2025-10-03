@@ -7,6 +7,7 @@ __pycache__/
 .venv/
 venv/
 env/
+pytorch.venv/
 
 # Logs / datasets / models
 *.log
@@ -18,6 +19,11 @@ env/
 *.zip
 *.tar
 *.gz
+*.pth
+*.local
+*.so
+*.logs
+logs/
 
 # Jupyter Notebook checkpoints
 .ipynb_checkpoints/
@@ -27,4 +33,5 @@ env/
 .idea/
 .vscode/
 
-*.pth
+*.out
+*.err
