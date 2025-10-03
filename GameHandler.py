@@ -207,14 +207,24 @@ class GameHandler:
 
                     card_tensor = self.game.get_card_tensor(current_player_id)
                     action_tensor = self.game.get_action_tensor()
-                    stack_tensor = self.game.get_stack_features(current_player_id)  # NEW: Get stack features
+                    stack_tensor = self.game.get_stack_features(current_player_id)  # Get stack features
+                    legal_actions = self.game.legal_actions()
 
-                    action, log_prob, value = active_agent.select_action(
-                        action_tensor= action_tensor,
-                        card_tensor= card_tensor,
-                        legal_actions=self.game.legal_actions(),
-                        stack_tensor=stack_tensor  # NEW: Pass stack features
-                    )
+                    # Only pass stack_tensor to the main learning agent (player 0)
+                    if current_player_id == 0:
+                        action, log_prob, value = active_agent.select_action(
+                            action_tensor=action_tensor,
+                            card_tensor=card_tensor,
+                            legal_actions=legal_actions,
+                            stack_tensor=stack_tensor
+                        )
+                    else:
+                        # Rule-based bots don't use stack_tensor parameter
+                        action, log_prob, value = active_agent.select_action(
+                            action_tensor=action_tensor,
+                            card_tensor=card_tensor,
+                            legal_actions=legal_actions
+                        )
                     
                     #store transition to assign reward to coorect player
                     if current_player_id == 0:
