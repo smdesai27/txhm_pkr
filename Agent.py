@@ -103,7 +103,7 @@ class Agent:
                  delta1: float = 1.5, delta2: float = 1.2, delta3: float = 0.8, 
                  gae_lambda: float = 0.95, ppo_epochs: int = 5, game = None, 
                  num_players:int=6, max_action_channels: int = None,
-                 epsilon_start=0.5, epsilon_decay=0.9995, epsilon_min=0.01):
+                 epsilon_start=0.5, epsilon_decay=0.9992, epsilon_min=0.005):
         
         self.game = game
         self.player_id = player_id
@@ -137,9 +137,18 @@ class Agent:
         Selects an action using an epsilon-greedy strategy with weighted exploration.
         """
         if random.random() < self.epsilon:
-            # --- FIXED: Weighted exploration favoring conservative actions ---
-            # Weights: [Fold: 0.15, Call: 0.45, Raise1: 0.25, Raise2: 0.10, All-in: 0.05]
-            action_weights = [0.15, 0.45, 0.25, 0.10, 0.05]
+            # --- UPDATED: Weighted exploration with reduced all-in probability ---
+            # Base weights favouring folds/calls and small raises
+            action_weights = [0.18, 0.50, 0.20, 0.10, 0.02]
+
+            # Further reduce random all-ins when deep-stacked
+            if stack_tensor is not None:
+                stack_ratio = float(stack_tensor[0])
+                if stack_ratio > 0.3:
+                    depth_factor = min(max((stack_ratio - 0.3) / 0.7, 0.0), 1.0)
+                    all_in_scale = 1.0 - 0.8 * depth_factor  # down to 0.2 at max depth
+                    action_weights[4] *= max(all_in_scale, 0.1)
+
             available_weights = [action_weights[a] for a in legal_actions]
             normalized_weights = np.array(available_weights) / sum(available_weights)
             action = np.random.choice(legal_actions, p=normalized_weights)

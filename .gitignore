@@ -1,37 +1,54 @@
-# Byte-compiled / cache
+# Python bytecode and cache files
 __pycache__/
 *.py[cod]
-*$py.class
+*.so
 
 # Virtual environments
+.env
+.env.*
 .venv/
 venv/
-env/
+*/venv/
 pytorch.venv/
 
-# Logs / datasets / models
-*.log
-*.pth
-*.ckpt
-*.h5
-*.csv
-*.tsv
-*.zip
-*.tar
-*.gz
-*.pth
-*.local
-*.so
-*.logs
+# Build artifacts
+build/
+dist/
+*.egg-info/
+.eggs/
+
+# Testing and coverage
+.pytest_cache/
+.coverage
+coverage.xml
+htmlcov/
+.mypy_cache/
+
+# Logs and temporary output
 logs/
-
-# Jupyter Notebook checkpoints
-.ipynb_checkpoints/
-
-# OS / editor files
-.DS_Store
-.idea/
-.vscode/
-
+*.log
 *.out
 *.err
+slurm-*
+
+# Model checkpoints and large binaries
+*.pth
+*.pt
+checkpoints/
+
+# Editor and IDE settings
+.vscode/
+.idea/
+*.swp
+*.swo
+.DS_Store
+
+# Local configuration and scratch space
+.local/
+scratch.py
+
+# Notebooks
+.ipynb_checkpoints/
+
+#notes
+IMPROVEMENTS_SUMMARY.md

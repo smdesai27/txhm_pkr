@@ -271,12 +271,24 @@ class GameHandler:
                     
                     # --- NEW: Reward shaping to penalize unnecessary all-ins ---
                     shaped_reward = base_reward
-                    if transition['action'] == 4:  # All-in action
-                        # Get stack ratio from the stored stack tensor
-                        stack_ratio = transition['obs'][2][0]  # my_stack_norm from stack_tensor
-                        if stack_ratio > 0.5:  # Deep-stacked (more than 50% of starting stack)
-                            # Small penalty for risky all-in play when deep
-                            shaped_reward -= 0.05  # Scaled penalty (after reward scaling by 10000)
+                    action_taken = transition['action']
+                    stack_ratio = transition['obs'][2][0]
+
+                    if action_taken == 4:  # All-in action
+                        if stack_ratio > 0.3:  # Consider stacks above 30% of starting stack as meaningful
+                            depth_factor = min(max((stack_ratio - 0.3) / 0.7, 0.0), 1.0)
+                            penalty = 0.1 + 0.3 * depth_factor  # Penalty between 0.1 and 0.4 after reward scaling
+                            shaped_reward -= penalty
+                    elif action_taken in (1, 2, 3):
+                        if stack_ratio > 0.4:  # Encourage disciplined medium-stack play
+                            depth_factor = min(max((stack_ratio - 0.4) / 0.6, 0.0), 1.0)
+                            if action_taken == 1:  # Call/check when deep can control pot
+                                bonus = 0.02 * depth_factor
+                            elif action_taken == 2:  # Small raise keeps aggression measured
+                                bonus = 0.04 * depth_factor
+                            else:  # action 3: larger raise but not shove
+                                bonus = 0.05 * depth_factor
+                            shaped_reward += bonus
                     
                     # Pass the full transition and its shaped reward to the agent
                     self.poker_agent.store_final_transition(transition, shaped_reward)
